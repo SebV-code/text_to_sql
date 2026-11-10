@@ -96,10 +96,15 @@ profondeur :
    imbriqué dans un CTE ;
 4. DML, DDL, `COPY`, commandes d'administration, `SELECT INTO` et verrous sont
    refusés ;
-5. les catalogues système et les fonctions dangereuses sont interdits ;
-6. chaque table physique doit appartenir au schéma métier découvert ;
-7. un `LIMIT` est ajouté ou abaissé localement ;
-8. SQLite est ouvert en lecture seule avec `PRAGMA query_only`.
+5. les catalogues système sont interdits et seules des fonctions analytiques
+   explicitement sûres sont autorisées ;
+6. chaque table physique doit appartenir au schéma métier découvert, avec une
+   résolution des CTE limitée à leur portée ;
+7. les identifiants cités et les CTE récursifs sont refusés pour éviter les
+   divergences de résolution et les calculs sans borne ;
+8. un `LIMIT` est ajouté ou abaissé localement ;
+9. SQLite est ouvert en lecture seule avec `PRAGMA query_only` et chaque requête
+   est exécutée dans un processus isolé, supprimé si le délai est dépassé.
 
 Le prompt n'est pas considéré comme une barrière de sécurité.
 

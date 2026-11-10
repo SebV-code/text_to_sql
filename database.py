@@ -9,6 +9,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
+from multiprocessing import get_all_start_methods, get_context
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -83,6 +84,33 @@ class QueryResult:
     rows: list[tuple[Any, ...]]
 
 
+class DatabaseQueryTimeoutError(RuntimeError):
+    """La base a interrompu une requête qui dépassait son échéance."""
+
+
+def _execute_sqlite_in_worker(
+    path: str, sql: str, max_rows: int, sender: Any
+) -> None:
+    """Exécute le SQL dans un processus isolé, sans propager les détails d'erreur."""
+
+    try:
+        connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            connection.execute("PRAGMA query_only = ON")
+            cursor = connection.execute(sql)
+            columns = tuple(item[0] for item in (cursor.description or ()))
+            rows = cursor.fetchmany(max_rows)
+            sender.send(("ok", columns, rows))
+        finally:
+            connection.close()
+    except Exception:
+        # Le parent ne doit afficher ni SQL brut, ni détail susceptible de
+        # contenir une valeur métier ou un chemin local.
+        sender.send(("error",))
+    finally:
+        sender.close()
+
+
 class Database(Protocol):
     dialect: str
 
@@ -96,8 +124,13 @@ class SQLiteDatabase:
 
     dialect = "sqlite"
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(
+        self, path: str | Path, *, statement_timeout_ms: int = 5000
+    ) -> None:
+        if statement_timeout_ms <= 0:
+            raise ValueError("statement_timeout_ms doit être positif")
         self.path = Path(path)
+        self.statement_timeout_ms = statement_timeout_ms
 
     def _connect_read_only(self) -> sqlite3.Connection:
         # mode=ro empêche une écriture même si la validation SQL régressait.
@@ -146,13 +179,40 @@ class SQLiteDatabase:
     def execute(self, sql: str, *, max_rows: int) -> QueryResult:
         if max_rows <= 0:
             raise ValueError("max_rows doit être positif")
-        with self._connect_read_only() as connection:
-            # query_only constitue une seconde barrière SQLite indépendante.
-            connection.execute("PRAGMA query_only = ON")
-            cursor = connection.execute(sql)
-            columns = tuple(item[0] for item in (cursor.description or ()))
-            rows = cursor.fetchmany(max_rows)
-        return QueryResult(columns, rows)
+
+        # Un progress handler SQLite ne peut pas interrompre une fonction native
+        # longue (randomblob, extension, etc.). Un processus séparé fournit une
+        # vraie échéance murale : il peut être terminé même si SQLite reste dans C.
+        method = "fork" if "fork" in get_all_start_methods() else "spawn"
+        context = get_context(method)
+        receiver, sender = context.Pipe(duplex=False)
+        process = context.Process(
+            target=_execute_sqlite_in_worker,
+            args=(str(self.path.resolve()), sql, max_rows, sender),
+            daemon=True,
+        )
+        process.start()
+        sender.close()
+        process.join(self.statement_timeout_ms / 1000)
+
+        if process.is_alive():
+            process.terminate()
+            process.join()
+            receiver.close()
+            raise DatabaseQueryTimeoutError(
+                "La requête SQLite a dépassé le délai d'exécution."
+            )
+
+        try:
+            if not receiver.poll(1):
+                raise RuntimeError("La base SQLite n'a retourné aucun résultat.")
+            payload = receiver.recv()
+        finally:
+            receiver.close()
+
+        if payload[0] != "ok":
+            raise RuntimeError("La base SQLite n'a pas pu exécuter la requête.")
+        return QueryResult(payload[1], payload[2])
 
 
 class _ConnectionFactory(Protocol):
@@ -281,4 +341,4 @@ def create_database(
         return PostgresDatabase(
             database_url.strip(), statement_timeout_ms=statement_timeout_ms
         )
-    return SQLiteDatabase(sqlite_path)
+    return SQLiteDatabase(sqlite_path, statement_timeout_ms=statement_timeout_ms)

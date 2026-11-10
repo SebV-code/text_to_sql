@@ -10,26 +10,52 @@ import re
 from collections.abc import Collection
 
 from sqlglot import exp, parse
-from sqlglot.errors import ParseError
+from sqlglot.errors import SqlglotError
+from sqlglot.optimizer.scope import traverse_scope
 
 
 class SQLSecurityError(ValueError):
     """Erreur volontairement générique pour une requête SQL non sûre."""
 
 
-# Ces fonctions peuvent lire des fichiers, temporiser une connexion, ouvrir une
-# autre connexion ou changer la configuration PostgreSQL. La comparaison est
-# insensible à la casse.
-DANGEROUS_FUNCTIONS = {
-    "dblink",
-    "dblink_exec",
-    "lo_export",
-    "lo_import",
-    "pg_ls_dir",
-    "pg_read_binary_file",
-    "pg_read_file",
-    "pg_sleep",
-    "set_config",
+# Politique fail-closed : seules les fonctions de lecture nécessaires aux
+# questions analytiques courantes sont admises. Une blacklist laisserait passer
+# les nombreuses variantes dblink/XML/extensions propres à PostgreSQL.
+SAFE_FUNCTIONS = {
+    "abs",
+    "avg",
+    "cast",
+    "ceil",
+    "ceiling",
+    "coalesce",
+    "concat",
+    "concat_ws",
+    "count",
+    "current_date",
+    "current_time",
+    "current_timestamp",
+    "date",
+    "date_trunc",
+    "datetime",
+    "extract",
+    "floor",
+    "greatest",
+    "julianday",
+    "least",
+    "length",
+    "lower",
+    "ltrim",
+    "max",
+    "min",
+    "nullif",
+    "replace",
+    "round",
+    "rtrim",
+    "strftime",
+    "substring",
+    "sum",
+    "trim",
+    "upper",
 }
 
 # Les catalogues ne font pas partie du schéma métier, même si une configuration
@@ -99,43 +125,61 @@ def _check_forbidden_nodes(expression: exp.Expression) -> None:
 
 
 def _check_tables(expression: exp.Expression, allowed_tables: set[str]) -> None:
-    """Vérifie les tables physiques en ignorant les alias de CTE."""
+    """Vérifie chaque table dans la portée SQL où elle est référencée.
 
-    cte_names = {
-        cte.alias_or_name.lower()
-        for cte in expression.find_all(exp.CTE)
-        if cte.alias_or_name
-    }
+    Une liste globale de noms de CTE est insuffisante : un CTE imbriqué ne doit
+    jamais masquer une table homonyme utilisée par une requête parente.
+    ``traverse_scope`` résout chaque source selon les règles de visibilité SQL.
+    """
 
-    for table in expression.find_all(exp.Table):
-        name = table.name.lower()
-        schema = table.db.lower() if table.db else ""
-        catalog = table.catalog.lower() if table.catalog else ""
+    # Les identifiants cités sont sensibles à la casse dans PostgreSQL, alors
+    # que sqlglot peut associer une référence non citée à un CTE cité homonyme.
+    # Le schéma pédagogique n'en a pas besoin : les refuser évite toute
+    # divergence entre la résolution du parseur et celle de la base.
+    if any(identifier.args.get("quoted") for identifier in expression.find_all(exp.Identifier)):
+        raise SQLSecurityError("Les identifiants SQL cités sont interdits.")
 
-        if (
-            name in SYSTEM_TABLES
-            or name.startswith("pg_")
-            or schema in SYSTEM_SCHEMAS
-            or catalog in SYSTEM_SCHEMAS
-        ):
-            raise SQLSecurityError("L'accès aux catalogues système est interdit.")
+    for scope in traverse_scope(expression):
+        visible_ctes = {name.lower() for name in scope.cte_sources}
+        for table in scope.tables:
+            name = table.name.lower()
+            schema = table.db.lower() if table.db else ""
+            catalog = table.catalog.lower() if table.catalog else ""
 
-        # Un CTE est une relation éphémère définie dans la requête, pas une
-        # table de la base. Les qualifications sont interdites pour éviter les
-        # contournements par une autre base ou un autre schéma.
-        if name in cte_names and not schema and not catalog:
-            continue
-        if schema or catalog or name not in allowed_tables:
-            raise SQLSecurityError(f"Table interdite : {table.sql()}")
+            if (
+                name in SYSTEM_TABLES
+                or name.startswith("pg_")
+                or schema in SYSTEM_SCHEMAS
+                or catalog in SYSTEM_SCHEMAS
+            ):
+                raise SQLSecurityError("L'accès aux catalogues système est interdit.")
+
+            # sqlglot associe l'alias visible à un Scope pour les CTE et les
+            # sous-requêtes, et à une Table pour une vraie table de la base.
+            # Une relation qualifiée reste toujours physique et est refusée.
+            # Les identifiants non cités PostgreSQL sont insensibles à la casse.
+            # cte_sources est propre à la portée : contrairement à une collecte
+            # globale, un CTE imbriqué ne masque pas une table de la requête mère.
+            if name in visible_ctes and not schema and not catalog:
+                continue
+            if schema or catalog or name not in allowed_tables:
+                raise SQLSecurityError(f"Table interdite : {table.sql()}")
 
 
 def _check_functions(expression: exp.Expression) -> None:
-    """Refuse les fonctions connues pour avoir des effets ou exfiltrer."""
+    """N'autorise que des fonctions analytiques explicitement sans effet."""
 
     for function in expression.find_all(exp.Func):
         name = _function_name(function)
-        if name in DANGEROUS_FUNCTIONS:
+        if name not in SAFE_FUNCTIONS:
             raise SQLSecurityError(f"Fonction interdite : {name}")
+
+
+def _check_complexity(expression: exp.Expression) -> None:
+    """Refuse les constructions sans borne incompatibles avec une petite app."""
+
+    if any(with_clause.args.get("recursive") for with_clause in expression.find_all(exp.With)):
+        raise SQLSecurityError("Les CTE récursifs sont interdits.")
 
 
 def _apply_limit(expression: exp.Expression, max_rows: int) -> None:
@@ -175,7 +219,9 @@ def validate_and_limit_sql(
 
     try:
         statements = parse(cleaned, read=dialect)
-    except ParseError as exc:
+    except SqlglotError as exc:
+        # Le parseur peut échouer pendant la tokenisation ou l'analyse. Aucun
+        # détail interne de sqlglot ne doit traverser la frontière applicative.
         raise SQLSecurityError("Le SQL est invalide.") from exc
 
     if len(statements) != 1:
@@ -196,6 +242,7 @@ def validate_and_limit_sql(
 
     normalized_tables = {name.lower() for name in allowed_tables}
     _check_forbidden_nodes(expression)
+    _check_complexity(expression)
     _check_tables(expression, normalized_tables)
     _check_functions(expression)
     _apply_limit(expression, max_rows)

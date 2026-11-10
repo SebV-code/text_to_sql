@@ -6,6 +6,8 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from database import PostgresDatabase, SQLiteDatabase, create_database
 
 
@@ -76,6 +78,31 @@ def test_execution_sqlite_applique_une_limite_defensive_au_fetch(tmp_path: Path)
     assert len(result.rows) == 3
 
 
+def test_delai_sqlite_est_configurable(tmp_path: Path) -> None:
+    database = SQLiteDatabase(tmp_path / "test.db", statement_timeout_ms=321)
+
+    assert database.statement_timeout_ms == 321
+
+
+@pytest.mark.parametrize("timeout_ms", [0, -1])
+def test_delai_sqlite_doit_etre_positif(tmp_path: Path, timeout_ms: int) -> None:
+    with pytest.raises(ValueError, match="positif"):
+        SQLiteDatabase(tmp_path / "test.db", statement_timeout_ms=timeout_ms)
+
+
+def test_execution_sqlite_interrompt_meme_une_fonction_native_couteuse(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "test.db"
+    make_sqlite(path)
+    database = SQLiteDatabase(path, statement_timeout_ms=1)
+
+    with pytest.raises(RuntimeError, match="délai") as caught:
+        database.execute("SELECT length(randomblob(100000000))", max_rows=1)
+
+    assert type(caught.value).__name__ == "DatabaseQueryTimeoutError"
+
+
 class FakeCursor:
     def __init__(self) -> None:
         self.calls: list[tuple[str, Any]] = []
@@ -144,6 +171,11 @@ def test_create_database_choisit_postgres_quand_url_presente(tmp_path: Path) -> 
 
 def test_create_database_choisit_sqlite_sans_url(tmp_path: Path) -> None:
     path = tmp_path / "demo.db"
-    database = create_database(database_url=None, sqlite_path=path)
+    database = create_database(
+        database_url=None,
+        sqlite_path=path,
+        statement_timeout_ms=4321,
+    )
     assert isinstance(database, SQLiteDatabase)
     assert database.path == path
+    assert database.statement_timeout_ms == 4321

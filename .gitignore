@@ -1,0 +1,21 @@
+# Environnements et caches Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Secrets locaux
+.env
+.streamlit/secrets.toml
+
+# Bases et artefacts locaux
+*.db
+*.sqlite
+*.sqlite3
+.coverage
+htmlcov/
+
+# Éditeurs et système
+.vscode/
+.idea/
+.DS_Store

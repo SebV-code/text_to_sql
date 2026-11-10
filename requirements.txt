@@ -1,0 +1,5 @@
+streamlit>=1.45,<2
+psycopg[binary]>=3.2,<4
+sqlglot>=26,<29
+Faker>=33,<40
+pytest>=8,<10

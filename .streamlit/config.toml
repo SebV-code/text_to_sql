@@ -1,0 +1,67 @@
+# Thème Streamlit inspiré de la charte AntIqscan
+# Emplacement dans votre projet : .streamlit/config.toml
+
+[theme]
+base = "light"
+
+# Couleurs issues de resources/css/app.css d’AntIqscan
+primaryColor = "#2F6B4F"             # vert bibliothèque
+backgroundColor = "#F7F3EA"          # ivoire
+secondaryBackgroundColor = "#F1ECE1" # papier grisé / widgets
+textColor = "#1F2933"                # encre
+linkColor = "#24533D"                # vert soutenu
+borderColor = "#D9D0C0"              # bordure parchemin
+codeBackgroundColor = "#FFFDF8"       # feuille claire
+
+# Typographie : interface sobre, titres à l’allure éditoriale
+font = "sans-serif"
+headingFont = "serif"
+codeFont = "monospace"
+
+# Formes proches des cartes et boutons AntIqscan
+baseRadius = "1rem"
+buttonRadius = "full"
+showWidgetBorder = true
+showSidebarBorder = true
+
+# Palette catégorielle adaptée de la palette `colorblind` de Seaborn.
+# Le vert de marque ouvre le cycle ; bleu, ocre, mauve et valeurs de
+# luminosité distinctes évitent de faire reposer la lecture sur rouge/vert.
+chartCategoricalColors = [
+    "#2F6B4F",
+    "#0173B2",
+    "#DE8F05",
+    "#CC78BC",
+    "#949494",
+    "#D55E00",
+    "#56B4E9",
+    "#CA9161",
+]
+
+# Dégradé séquentiel vert, du papier vers le vert soutenu
+chartSequentialColors = [
+    "#F7F3EA",
+    "#DCE7DF",
+    "#ABC5B5",
+    "#71977F",
+    "#2F6B4F",
+    "#24533D",
+]
+
+# Divergence bleu–ivoire–ocre : préférable à rouge–vert
+chartDivergingColors = [
+    "#0173B2",
+    "#78B7D4",
+    "#D9E7E8",
+    "#F7F3EA",
+    "#F0D6A5",
+    "#DE8F05",
+]
+
+[theme.sidebar]
+backgroundColor = "#FFFDF8"
+secondaryBackgroundColor = "#F1ECE1"
+textColor = "#1F2933"
+primaryColor = "#2F6B4F"
+linkColor = "#24533D"
+borderColor = "#D9D0C0"

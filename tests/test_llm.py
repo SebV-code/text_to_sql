@@ -10,9 +10,9 @@ import pytest
 from llm import LLMError, build_messages, generate_sql
 
 
-SCHEMA = """Dialecte SQL : sqlite
+SCHEMA = """Dialecte SQL : postgres
 Tables :
-- clients(id INTEGER PRIMARY KEY, nom TEXT NOT NULL)
+- clients(id integer PRIMARY KEY, nom text NOT NULL)
 Relations :
 - aucune"""
 

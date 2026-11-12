@@ -1,8 +1,9 @@
-# Architecture — Text-to-SQL sans exposition des données
+# Architecture — Text-to-SQL sur NeonDB
 
 ## Objectif
 
-Permettre à un utilisateur de questionner une base SQL en français, tout en garantissant que le LLM ne reçoit jamais les lignes de la base ni les résultats des requêtes.
+Permettre à un utilisateur de questionner en français une base NeonDB existante,
+sans transmettre au LLM les lignes de la base ni les résultats des requêtes.
 
 ## Flux
 
@@ -10,11 +11,15 @@ Permettre à un utilisateur de questionner une base SQL en français, tout en ga
 Question utilisateur
         |
         v
-Application Streamlit
+Application Streamlit -- exige DATABASE_URL
+        |
+        |  lecture des métadonnées dans information_schema
+        v
+Schéma : tables, colonnes, types, PK/FK
         |
         |  question + schéma uniquement
         v
-OpenRouter / petit LLM
+OpenRouter / LLM
         |
         |  une requête SQL uniquement
         v
@@ -22,18 +27,22 @@ Validation SQL locale
         |
         |  SELECT validé + LIMIT
         v
-Base locale de démonstration ou PostgreSQL/NeonDB
+NeonDB -- transaction READ ONLY + statement_timeout
         |
         |  résultats uniquement vers Streamlit
         v
 Affichage SQL + tableau de résultats
 ```
 
+`get_schema()` est appelé avant le LLM. Son introspection interroge uniquement
+`information_schema` pour les tables de base du schéma `public`, leurs colonnes,
+types, clés primaires et clés étrangères. Elle ne lit aucune table métier.
+
 ## Frontière de confidentialité
 
 OpenRouter reçoit uniquement :
 
-- la question saisie par l’utilisateur ;
+- la question saisie par l'utilisateur ;
 - les noms des tables et colonnes ;
 - les types SQL ;
 - les clés primaires et étrangères nécessaires aux jointures.
@@ -41,50 +50,44 @@ OpenRouter reçoit uniquement :
 OpenRouter ne reçoit jamais :
 
 - une ligne ou un échantillon de données ;
-- le résultat d’une requête ;
+- le résultat d'une requête ;
 - une erreur contenant des valeurs de la base ;
-- l’URL ou les identifiants de connexion.
+- l'URL ou les identifiants de connexion.
 
-L’API OpenRouter est sans état : le schéma doit donc accompagner chaque demande de génération SQL. Le schéma peut être mis en cache localement, mais il n’est pas remplacé par des données d’exemple.
+L'API OpenRouter est sans état : le schéma accompagne chaque demande de
+génération SQL. Aucun résultat ni aucune erreur n'entraîne un nouvel appel.
 
-## Fichiers prévus
+## Modules
 
-- `app.py` : interface Streamlit et orchestration lisible du flux.
-- `llm.py` : construction du prompt et appel HTTP minimal à OpenRouter.
-- `database.py` : lecture du schéma, exécution en lecture seule et limite de temps.
-- `sql_security.py` : validation locale et ajout d’une limite de lignes.
-- `scripts/create_demo_db.py` : création des tables `clients`, `produits`, `commandes` et génération de données Faker.
-- `tests/` : tests unitaires et intégration sur une base SQLite locale de démonstration.
-- `.streamlit/config.toml` : thème AntIqscan.
+- `app.py` : interface Streamlit, configuration et orchestration du flux ;
+- `llm.py` : construction du prompt et appel HTTP minimal à OpenRouter ;
+- `database.py` : introspection `information_schema` et lecture PostgreSQL ;
+- `sql_security.py` : validation locale et limite de lignes ;
+- `tests/` : tests unitaires sans accès réseau ni base réelle ;
+- `.streamlit/config.toml` : thème de l'interface.
 
 ## Défense en profondeur
 
-Le prompt verrouillé améliore la forme de la réponse, mais ne constitue pas une barrière de sécurité. Avant toute exécution, le code local doit :
+Le prompt verrouillé améliore la forme de la réponse, mais ne constitue pas une
+barrière de sécurité. Avant toute exécution, le code local :
 
-1. retirer uniquement un éventuel bloc Markdown autour du SQL ;
-2. refuser les réponses vides ou contenant plusieurs instructions ;
-3. analyser le SQL avec `sqlglot` ;
-4. n’accepter qu’une requête de lecture (`SELECT`, y compris avec `WITH`) ;
-5. refuser DDL, DML, `COPY`, commandes d’administration et fonctions PostgreSQL dangereuses ;
-6. limiter les tables aux tables métier découvertes dans le schéma ;
-7. appliquer une limite maximale de lignes ;
-8. exécuter PostgreSQL dans une transaction `READ ONLY` avec un délai maximal ;
-9. utiliser en production un utilisateur NeonDB disposant uniquement de `CONNECT`, `USAGE` et `SELECT`.
+1. retire uniquement un éventuel bloc Markdown autour du SQL ;
+2. refuse les réponses vides ou contenant plusieurs instructions ;
+3. analyse le SQL avec `sqlglot` ;
+4. n'accepte qu'une requête de lecture (`SELECT`, y compris avec `WITH`) ;
+5. refuse DDL, DML, `COPY`, commandes d'administration et fonctions dangereuses ;
+6. limite les tables aux tables métier découvertes dans le schéma ;
+7. applique une limite maximale de lignes ;
+8. exécute PostgreSQL dans une transaction `READ ONLY` avec un délai maximal.
+
+En production, le rôle NeonDB doit lui-même être limité à `CONNECT`, `USAGE` et
+`SELECT`.
 
 ## Dépendances minimales
 
 - `streamlit` : interface ;
 - `psycopg[binary]` : connexion PostgreSQL/NeonDB ;
-- `sqlglot` : analyse fiable du SQL ;
-- `faker` : données synthétiques de démonstration ;
+- `sqlglot` : analyse du SQL ;
 - `pytest` : tests.
 
-L’appel OpenRouter utilise la bibliothèque standard `urllib.request`, afin d’éviter une dépendance HTTP supplémentaire.
-
-## Hors périmètre de cette première version
-
-- authentification des utilisateurs ;
-- historique partagé des questions ;
-- graphiques automatiques ;
-- reformulation des résultats par un second LLM ;
-- déploiement serveur et service permanent.
+L'appel OpenRouter utilise la bibliothèque standard `urllib.request`.

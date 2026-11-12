@@ -8,48 +8,46 @@ from typing import Any
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from database import (
-    ColumnSchema,
-    DatabaseSchema,
-    QueryResult,
-    SQLiteDatabase,
-    TableSchema,
-)
+from database import ColumnSchema, DatabaseSchema, QueryResult, TableSchema
 from sql_security import SQLSecurityError
 
-from app import ensure_demo_database, process_question
+from app import process_question
 
 
 class FakeDatabase:
-    dialect = "sqlite"
+    dialect = "postgres"
 
     def __init__(self) -> None:
+        self.events: list[str] = []
         self.executed: list[tuple[str, int]] = []
 
     def get_schema(self) -> DatabaseSchema:
+        self.events.append("schema")
         return DatabaseSchema(
-            "sqlite",
+            "postgres",
             (
                 TableSchema(
                     "clients",
                     (
-                        ColumnSchema("id", "INTEGER", False, True),
-                        ColumnSchema("nom", "TEXT", False),
+                        ColumnSchema("id", "integer", False, True),
+                        ColumnSchema("nom", "text", False),
                     ),
                 ),
             ),
         )
 
     def execute(self, sql: str, *, max_rows: int) -> QueryResult:
+        self.events.append("execute")
         self.executed.append((sql, max_rows))
         return QueryResult(("nom",), [("Alice locale",)])
 
 
-def test_process_question_envoie_uniquement_question_et_schema_au_llm() -> None:
+def test_process_question_lit_schema_avant_appel_llm() -> None:
     database = FakeDatabase()
     received: dict[str, Any] = {}
 
     def generator(question: str, schema: str, **kwargs: Any) -> str:
+        database.events.append("llm")
         received.update(question=question, schema=schema, kwargs=kwargs)
         return "SELECT nom FROM clients"
 
@@ -62,8 +60,9 @@ def test_process_question_envoie_uniquement_question_et_schema_au_llm() -> None:
         generator=generator,
     )
 
+    assert database.events == ["schema", "llm", "execute"]
     assert received["question"] == "Liste les clients"
-    assert "clients(id INTEGER PRIMARY KEY, nom TEXT NOT NULL)" in received["schema"]
+    assert "clients(id integer PRIMARY KEY, nom text NOT NULL)" in received["schema"]
     assert "Alice locale" not in received["schema"]
     assert set(received["kwargs"]) == {"api_key", "model", "app_url", "app_name"}
     assert database.executed == [(execution.sql, 20)]
@@ -82,21 +81,29 @@ def test_process_question_ne_execute_pas_un_sql_refuse() -> None:
             generator=lambda *_args, **_kwargs: "DELETE FROM clients",
         )
 
+    assert database.events == ["schema"]
     assert database.executed == []
 
 
-def test_ensure_demo_database_cree_sqlite_si_absente(tmp_path: Path) -> None:
-    path = tmp_path / "demo.db"
-    ensure_demo_database(path)
-    schema = SQLiteDatabase(path).get_schema()
-    assert schema.allowed_tables == {"clients", "produits", "commandes"}
+def test_interface_exige_database_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+
+    app_path = Path(__file__).parents[1] / "app.py"
+    app = AppTest.from_file(app_path).run(timeout=15)
+
+    assert not app.exception
+    assert app.error
+    assert "DATABASE_URL" in app.error[0].value
+    assert not app.text_input
+    assert not app.button
 
 
 def test_interface_affiche_question_bouton_sql_et_zone_resultats(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("SQLITE_PATH", str(tmp_path / "streamlit-demo.db"))
-    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv(
+        "DATABASE_URL", "postgresql://user:password@example.test/database"
+    )
 
     app_path = Path(__file__).parents[1] / "app.py"
     app = AppTest.from_file(app_path).run(timeout=15)

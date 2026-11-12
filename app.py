@@ -5,14 +5,11 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any
 
 import streamlit as st
 
-from database import Database, QueryResult, create_database
+from database import Database, PostgresDatabase, QueryResult
 from llm import DEFAULT_MODEL, LLMError, generate_sql
-from scripts.create_demo_db import create_demo_database
 from sql_security import SQLSecurityError, validate_and_limit_sql
 
 
@@ -47,15 +44,6 @@ def _positive_integer_setting(name: str, default: int) -> int:
     except ValueError:
         return default
     return value if value > 0 else default
-
-
-def ensure_demo_database(path: str | Path) -> Path:
-    """Crée la démonstration synthétique seulement si elle est absente."""
-
-    database_path = Path(path)
-    if not database_path.exists():
-        create_demo_database(database_path)
-    return database_path
 
 
 def process_question(
@@ -106,13 +94,15 @@ def run_app() -> None:
     )
 
     database_url = _setting("DATABASE_URL").strip()
-    sqlite_path = Path(_setting("SQLITE_PATH", "demo.db"))
     if not database_url:
-        ensure_demo_database(sqlite_path)
+        st.error(
+            "DATABASE_URL est absent. Configurez l'URL de la base NeonDB dans "
+            "l'environnement ou dans .streamlit/secrets.toml."
+        )
+        return
 
-    database = create_database(
-        database_url=database_url or None,
-        sqlite_path=sqlite_path,
+    database = PostgresDatabase(
+        database_url,
         statement_timeout_ms=_positive_integer_setting(
             "DB_STATEMENT_TIMEOUT_MS", 5000
         ),

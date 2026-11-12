@@ -1,88 +1,44 @@
-# Text-to-SQL Implementation Plan
+# Text-to-SQL — plan d'implémentation NeonDB
 
-> **For Hermes:** Use subagent-driven-development skill to implement this plan task-by-task.
+**Objectif :** transformer une question française en SQL PostgreSQL, valider la
+requête localement, puis interroger en lecture seule une base NeonDB existante
+sans transmettre de données métier au LLM.
 
-**Goal:** Construire une application Streamlit pédagogique qui transforme une question française en SQL, valide la requête localement, puis interroge une base locale de démonstration ou PostgreSQL/NeonDB sans transmettre de données au LLM.
+**Architecture :** quatre modules séparent interface, appel LLM, sécurité SQL et
+accès PostgreSQL. `DATABASE_URL` est obligatoire. L'accès aux métadonnées est
+limité à `information_schema` et précède chaque appel LLM.
 
-**Architecture:** Quatre modules Python simples séparent interface, appel LLM, sécurité SQL et accès aux données. Une base SQLite locale permet un vrai test d’intégration sans identifiants NeonDB ; le chemin PostgreSQL utilise `psycopg` et une transaction en lecture seule.
+**Stack :** Python 3.11, Streamlit, urllib, sqlglot, psycopg et pytest.
 
-**Tech Stack:** Python 3.11, Streamlit, urllib, sqlglot, sqlite3, psycopg, Faker, pytest.
+## Étape 1 — Configuration
 
----
+1. Tester l'échec explicite lorsque `DATABASE_URL` est absent ou vide.
+2. Construire uniquement `PostgresDatabase` avec l'URL fournie.
+3. Documenter les variables sans inclure de secret.
 
-### Task 1: Configuration et tests du prompt
+## Étape 2 — Introspection sûre
 
-**Files:**
-- Create: `tests/test_llm.py`
-- Create: `llm.py`
-- Create: `.env.example`
-- Create: `requirements.txt`
+1. Tester l'extraction des tables, colonnes, types, clés primaires et étrangères.
+2. Vérifier que les requêtes d'introspection ciblent uniquement
+   `information_schema` et jamais une table métier.
+3. Sérialiser uniquement ces métadonnées dans le schéma destiné au prompt.
 
-**Steps:**
-1. Écrire des tests qui imposent la présence du schéma, de la question et des contraintes de sortie, et l’absence de données/résultats.
-2. Exécuter les tests et constater l’échec attendu.
-3. Implémenter la construction des messages et l’appel OpenRouter via `urllib.request`.
-4. Rejouer les tests.
+## Étape 3 — Orchestration
 
-### Task 2: Validation SQL locale
+1. Tester l'ordre `get_schema()` → appel LLM → validation → exécution.
+2. Envoyer uniquement la question et le schéma au LLM.
+3. Ne jamais rappeler le LLM avec un résultat ou une erreur.
 
-**Files:**
-- Create: `tests/test_sql_security.py`
-- Create: `sql_security.py`
+## Étape 4 — Lecture protégée
 
-**Steps:**
-1. Tester un `SELECT`, un `WITH`, les blocs Markdown, la limite automatique, les instructions multiples, DML/DDL, tables inconnues, catalogues système et fonctions dangereuses.
-2. Vérifier l’échec initial.
-3. Implémenter la validation minimale avec `sqlglot`.
-4. Vérifier tous les cas et refactoriser uniquement après passage au vert.
+1. Conserver la validation AST et l'allowlist des tables découvertes.
+2. Imposer une transaction `READ ONLY`, un `statement_timeout` et une limite de
+   lignes.
+3. Recommander un rôle NeonDB disposant uniquement des droits de lecture requis.
 
-### Task 3: Base de données et schéma sûr
+## Étape 5 — Vérification
 
-**Files:**
-- Create: `tests/test_database.py`
-- Create: `database.py`
-
-**Steps:**
-1. Tester l’extraction du schéma SQLite sans valeurs, l’exécution d’un `SELECT`, et la limite de résultats.
-2. Vérifier l’échec initial.
-3. Implémenter SQLite pour la démonstration et PostgreSQL via `psycopg` pour NeonDB.
-4. Sur PostgreSQL, appliquer transaction en lecture seule et `statement_timeout`.
-5. Rejouer les tests.
-
-### Task 4: Base de démonstration
-
-**Files:**
-- Create: `tests/test_demo_db.py`
-- Create: `scripts/create_demo_db.py`
-
-**Steps:**
-1. Tester la création des trois tables, leurs relations et leur peuplement.
-2. Vérifier l’échec initial.
-3. Créer `clients`, `produits`, `commandes` avec Faker et une graine reproductible.
-4. Rejouer les tests.
-
-### Task 5: Interface Streamlit
-
-**Files:**
-- Create: `app.py`
-- Create: `.streamlit/config.toml`
-
-**Steps:**
-1. Garder l’interface dans un seul fichier lisible : titre, champ question, bouton, SQL, tableau.
-2. Ne jamais rappeler le LLM avec les résultats ou une erreur de base.
-3. Reprendre le thème AntIqscan fourni.
-4. Vérifier le démarrage headless de Streamlit.
-
-### Task 6: Documentation et vérification finale
-
-**Files:**
-- Create: `README.md`
-- Create: `.gitignore`
-- Modify: `docs/architecture.md`
-
-**Steps:**
-1. Documenter installation, création de la base de démonstration, variables, lancement et garde-fous.
-2. Exécuter la suite complète `pytest`.
+1. Exécuter les tests ciblés après chaque cycle rouge/vert.
+2. Exécuter toute la suite avec `pytest`.
 3. Compiler les modules Python.
-4. Démarrer Streamlit en mode headless et vérifier son endpoint de santé.
-5. Examiner `git diff`, puis créer un commit local sans pousser.
+4. Examiner le diff et rechercher les anciens chemins de configuration.

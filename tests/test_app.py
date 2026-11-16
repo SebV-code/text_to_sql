@@ -51,7 +51,7 @@ def test_process_question_lit_schema_avant_appel_llm() -> None:
         received.update(question=question, schema=schema, kwargs=kwargs)
         return "SELECT nom FROM clients"
 
-    execution = process_question(
+    sql, result = process_question(
         "Liste les clients",
         database,
         api_key="cle",
@@ -65,8 +65,8 @@ def test_process_question_lit_schema_avant_appel_llm() -> None:
     assert "clients(id integer PRIMARY KEY, nom text NOT NULL)" in received["schema"]
     assert "Alice locale" not in received["schema"]
     assert set(received["kwargs"]) == {"api_key", "model", "app_url", "app_name"}
-    assert database.executed == [(execution.sql, 20)]
-    assert execution.result.rows == [("Alice locale",)]
+    assert database.executed == [(sql, 20)]
+    assert result.rows == [("Alice locale",)]
 
 
 def test_process_question_ne_execute_pas_un_sql_refuse() -> None:

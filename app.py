@@ -4,21 +4,12 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
-from dataclasses import dataclass
 
 import streamlit as st
 
 from database import Database, PostgresDatabase, QueryResult
 from llm import DEFAULT_MODEL, LLMError, generate_sql
 from sql_security import SQLSecurityError, validate_and_limit_sql
-
-
-@dataclass(frozen=True)
-class QueryExecution:
-    """Réunit le SQL validé et son résultat, tous deux conservés localement."""
-
-    sql: str
-    result: QueryResult
 
 
 def _setting(name: str, default: str = "") -> str:
@@ -56,7 +47,7 @@ def process_question(
     generator: Callable[..., str] = generate_sql,
     app_url: str = "http://localhost:8501",
     app_name: str = "Text-to-SQL local",
-) -> QueryExecution:
+) -> tuple[str, QueryResult]:
     """Exécute le flux complet sans jamais reboucler vers le modèle.
 
     L'appel LLM a lieu une seule fois, avant tout résultat ou erreur SQL. Sa
@@ -79,8 +70,7 @@ def process_question(
         max_rows=max_rows,
         dialect=schema.dialect,
     )
-    result = database.execute(safe_sql, max_rows=max_rows)
-    return QueryExecution(safe_sql, result)
+    return safe_sql, database.execute(safe_sql, max_rows=max_rows)
 
 
 def run_app() -> None:
@@ -138,7 +128,7 @@ def run_app() -> None:
 
     try:
         with st.spinner("Génération et validation de la requête…"):
-            execution = process_question(
+            safe_sql, result = process_question(
                 question,
                 database,
                 api_key=api_key,
@@ -158,11 +148,11 @@ def run_app() -> None:
         st.error("La base n'a pas pu exécuter la requête validée.")
         return
 
-    sql_placeholder.code(execution.sql, language="sql")
-    if execution.result.rows:
+    sql_placeholder.code(safe_sql, language="sql")
+    if result.rows:
         records = [
-            dict(zip(execution.result.columns, row, strict=True))
-            for row in execution.result.rows
+            dict(zip(result.columns, row, strict=True))
+            for row in result.rows
         ]
         result_placeholder.dataframe(records, use_container_width=True)
     else:

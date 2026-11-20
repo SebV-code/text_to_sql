@@ -119,7 +119,7 @@ def run_app() -> None:
     st.title("Text-to-SQL")
     st.caption(
         "Posez une question en français. Seuls la question et le schéma "
-        "(tables, colonnes, types et relations) sont transmis à OpenRouter."
+        "(tables, colonnes, types et relations) sont transmis à un Llm."
     )
 
     demo_password = _setting("DEMO_PASSWORD")

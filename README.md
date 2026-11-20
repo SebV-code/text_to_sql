@@ -1,11 +1,16 @@
-# Text-to-SQL sur NeonDB
+# Text-to-SQL
+En production sur : [Text2SQL](https://portfolio.vatinel.fr/text2sql)
+## Problématique : Comment interroger une bdd PostGreSQL en langage naturel
 
-Application Streamlit pédagogique : une question en français est transformée en
-SQL PostgreSQL, validée localement, puis exécutée en lecture seule sur une base
-NeonDB existante.
+Une question en français est transformée en SQL par un appel API à un petit LLM.
 
-La création et le peuplement d'une base de démonstration sont volontairement
-séparés dans [`Faker-BDD-Neon`](https://github.com/SebV-code/Faker-BDD-Neon).
+Pour ne pas exposer les données au LLM seul le schéma des table est jointe au prompt.
+
+La Requête SQL, est validée localement, puis exécutée via une requete SQLAlchemy sur une base NeonDB existante.
+
+
+
+La création et le peuplement de la base de démonstration a été généré avec la bibliothèque python Faker [`Faker-BDD-Neon`](https://github.com/SebV-code/Faker-BDD-Neon).
 
 ## Frontière de confidentialité
 
@@ -95,7 +100,6 @@ en profondeur :
 8. un `LIMIT` est ajouté ou abaissé localement ;
 9. PostgreSQL est interrogé dans une transaction en lecture seule avec délai.
 
-Le prompt n'est pas considéré comme une barrière de sécurité.
 
 ## Tests et contrôles locaux
 

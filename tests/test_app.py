@@ -8,52 +8,66 @@ from typing import Any
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from database import (
-    ColumnSchema,
-    DatabaseSchema,
-    QueryResult,
-    SQLiteDatabase,
-    TableSchema,
-)
+from database import ColumnSchema, DatabaseSchema, ForeignKeySchema, QueryResult, TableSchema
 from sql_security import SQLSecurityError
 
-from app import ensure_demo_database, process_question
+from app import process_question, schema_diagram_dot
 
 
 class FakeDatabase:
-    dialect = "sqlite"
+    dialect = "postgres"
 
     def __init__(self) -> None:
+        self.events: list[str] = []
         self.executed: list[tuple[str, int]] = []
 
     def get_schema(self) -> DatabaseSchema:
+        self.events.append("schema")
         return DatabaseSchema(
-            "sqlite",
+            "postgres",
             (
                 TableSchema(
                     "clients",
                     (
-                        ColumnSchema("id", "INTEGER", False, True),
-                        ColumnSchema("nom", "TEXT", False),
+                        ColumnSchema("id", "integer", False, True),
+                        ColumnSchema("nom", "text", False),
                     ),
                 ),
             ),
         )
 
     def execute(self, sql: str, *, max_rows: int) -> QueryResult:
+        self.events.append("execute")
         self.executed.append((sql, max_rows))
         return QueryResult(("nom",), [("Alice locale",)])
 
 
-def test_process_question_envoie_uniquement_question_et_schema_au_llm() -> None:
+def test_diagramme_repere_tables_colonnes_et_relations() -> None:
+    schema = DatabaseSchema("postgres", (
+        TableSchema("clients", (ColumnSchema("id", "integer", False, True),)),
+        TableSchema("commandes", (
+            ColumnSchema("id", "integer", False, True),
+            ColumnSchema("client_id", "integer", False),
+        ), (ForeignKeySchema("client_id", "clients", "id"),)),
+    ))
+    dot = schema_diagram_dot(schema)
+    assert "clients" in dot and "commandes" in dot
+    assert "client_id" in dot and "id" in dot
+    assert '"commandes":c1 -> "clients":c0' in dot
+    assert "client_id → id" in dot
+    assert "PK" in dot and "FK" in dot
+
+
+def test_process_question_lit_schema_avant_appel_llm() -> None:
     database = FakeDatabase()
     received: dict[str, Any] = {}
 
     def generator(question: str, schema: str, **kwargs: Any) -> str:
+        database.events.append("llm")
         received.update(question=question, schema=schema, kwargs=kwargs)
         return "SELECT nom FROM clients"
 
-    execution = process_question(
+    sql, result = process_question(
         "Liste les clients",
         database,
         api_key="cle",
@@ -62,12 +76,13 @@ def test_process_question_envoie_uniquement_question_et_schema_au_llm() -> None:
         generator=generator,
     )
 
+    assert database.events == ["schema", "llm", "execute"]
     assert received["question"] == "Liste les clients"
-    assert "clients(id INTEGER PRIMARY KEY, nom TEXT NOT NULL)" in received["schema"]
+    assert "clients(id integer PRIMARY KEY, nom text NOT NULL)" in received["schema"]
     assert "Alice locale" not in received["schema"]
     assert set(received["kwargs"]) == {"api_key", "model", "app_url", "app_name"}
-    assert database.executed == [(execution.sql, 20)]
-    assert execution.result.rows == [("Alice locale",)]
+    assert database.executed == [(sql, 20)]
+    assert result.rows == [("Alice locale",)]
 
 
 def test_process_question_ne_execute_pas_un_sql_refuse() -> None:
@@ -82,21 +97,29 @@ def test_process_question_ne_execute_pas_un_sql_refuse() -> None:
             generator=lambda *_args, **_kwargs: "DELETE FROM clients",
         )
 
+    assert database.events == ["schema"]
     assert database.executed == []
 
 
-def test_ensure_demo_database_cree_sqlite_si_absente(tmp_path: Path) -> None:
-    path = tmp_path / "demo.db"
-    ensure_demo_database(path)
-    schema = SQLiteDatabase(path).get_schema()
-    assert schema.allowed_tables == {"clients", "produits", "commandes"}
+def test_interface_exige_database_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+
+    app_path = Path(__file__).parents[1] / "app.py"
+    app = AppTest.from_file(app_path).run(timeout=15)
+
+    assert not app.exception
+    assert app.error
+    assert "DATABASE_URL" in app.error[0].value
+    assert not app.text_input
+    assert not app.button
 
 
 def test_interface_affiche_question_bouton_sql_et_zone_resultats(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("SQLITE_PATH", str(tmp_path / "streamlit-demo.db"))
-    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv(
+        "DATABASE_URL", "postgresql://user:password@example.test/database"
+    )
 
     app_path = Path(__file__).parents[1] / "app.py"
     app = AppTest.from_file(app_path).run(timeout=15)
@@ -105,5 +128,57 @@ def test_interface_affiche_question_bouton_sql_et_zone_resultats(
     assert app.title[0].value == "Text-to-SQL"
     assert app.text_input[0].label == "Votre question en français"
     assert app.button[0].label == "Générer et exécuter"
+    assert app.button[1].label == "Voir le schéma des données"
     assert any("SQL" in markdown.value for markdown in app.markdown)
     assert any("Résultats" in markdown.value for markdown in app.markdown)
+
+
+def test_interface_demo_reste_verrouillee_jusqua_authentification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DEMO_PASSWORD", "test-only-password")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:***@example.test/database")
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run(timeout=15)
+
+    assert not app.exception
+    assert app.text_input[0].label == "Mot de passe de démonstration"
+    assert app.text_input[0].proto.type == 1  # Streamlit TextInputType.PASSWORD
+    assert not app.button
+
+    app.text_input[0].set_value("incorrect").run()
+    assert not app.button
+    app.text_input[0].set_value("échec").run()
+    assert not app.exception
+    assert not app.button
+    app.text_input[0].set_value("test-only-password").run()
+    assert app.text_input[0].label == "Votre question en français"
+    assert app.button[0].label == "Générer et exécuter"
+
+
+def test_bouton_diagramme_affiche_schema_apres_authentification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DEMO_PASSWORD", "demo-test")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:***@example.test/database")
+    monkeypatch.setattr("app.PostgresDatabase", lambda *_args, **_kwargs: FakeDatabase())
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run(timeout=15)
+    assert not app.button
+    app.text_input[0].set_value("demo-test").run()
+    app.button[1].click().run()
+    assert not app.exception
+    assert any("Schéma des données interrogeables" in heading.value for heading in app.subheader)
+    assert any(button.label == "Revenir aux questions" for button in app.button)
+
+
+def test_interface_demo_refuse_de_demarrer_sans_mot_de_passe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DEMO_REQUIRE_AUTH", "1")
+    monkeypatch.delenv("DEMO_PASSWORD", raising=False)
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:***@example.test/database")
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run(timeout=15)
+
+    assert not app.exception
+    assert app.error
+    assert not app.button
+    assert not app.text_input

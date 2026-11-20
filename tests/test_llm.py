@@ -10,9 +10,9 @@ import pytest
 from llm import LLMError, build_messages, generate_sql
 
 
-SCHEMA = """Dialecte SQL : sqlite
+SCHEMA = """Dialecte SQL : postgres
 Tables :
-- clients(id INTEGER PRIMARY KEY, nom TEXT NOT NULL)
+- clients(id integer PRIMARY KEY, nom text NOT NULL)
 Relations :
 - aucune"""
 
@@ -31,6 +31,20 @@ def test_messages_contiennent_uniquement_question_schema_et_contraintes() -> Non
     assert "catalogues système" in serialized
     assert "résultat de requête" not in serialized.lower()
     assert "DATABASE_URL" not in serialized
+
+
+def test_prompt_precise_le_calcul_du_ca_et_le_semestre_sans_annee() -> None:
+    schema = """Tables :
+- commandes(id integer, date_commande date, montant_total numeric)
+- ventes(id integer, commande_id integer, quantite integer)"""
+    messages = build_messages("Quel est le chiffre d'affaire du premier semestre ?", schema)
+    system = messages[0]["content"]
+    assert "commandes.montant_total" in system
+    assert "ventes.montant_total" in system
+    assert "date_commande" in system
+    assert "sans année" in system.lower()
+    assert "par année" in system
+    assert "BETWEEN 1 AND 6" in system
 
 
 def test_question_et_schema_vides_sont_refuses() -> None:
@@ -85,8 +99,10 @@ def test_generate_sql_envoie_seulement_messages_autorises_et_parametres_modele()
     assert sql == "SELECT COUNT(*) FROM clients"
     assert payload["model"] == "modele-test"
     assert payload["temperature"] == 0
+    assert payload["max_tokens"] == 700
+    assert payload["reasoning"] == {"effort": "none"}
     assert payload["messages"] == build_messages("Combien de clients ?", SCHEMA)
-    assert set(payload) == {"model", "messages", "temperature", "max_tokens"}
+    assert set(payload) == {"model", "messages", "temperature", "max_tokens", "reasoning"}
     assert "cle-test" not in serialized_payload
     assert "résultat confidentiel" not in serialized_payload
     assert opener.request.get_header("Authorization") == "Bearer cle-test"

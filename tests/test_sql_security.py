@@ -12,7 +12,7 @@ TABLES = {"clients", "produits", "commandes"}
 
 
 def secure(sql: str, max_rows: int = 100) -> str:
-    return validate_and_limit_sql(sql, TABLES, max_rows=max_rows, dialect="sqlite")
+    return validate_and_limit_sql(sql, TABLES, max_rows=max_rows, dialect="postgres")
 
 
 def secure_postgres(sql: str, max_rows: int = 100) -> str:
@@ -20,7 +20,7 @@ def secure_postgres(sql: str, max_rows: int = 100) -> str:
 
 
 def test_select_simple_recoit_une_limite_locale() -> None:
-    expression = parse_one(secure("SELECT nom FROM clients"), dialect="sqlite")
+    expression = parse_one(secure("SELECT nom FROM clients"), dialect="postgres")
     assert int(expression.args["limit"].expression.this) == 100
 
 
@@ -79,7 +79,7 @@ def test_plusieurs_instructions_sont_refusees() -> None:
         "DROP TABLE clients",
         "CREATE TABLE pirate (id INTEGER)",
         "COPY clients TO '/tmp/clients.csv'",
-        "PRAGMA table_info(clients)",
+        "VACUUM clients",
     ],
 )
 def test_les_requetes_non_select_sont_refusees(sql: str) -> None:
@@ -155,7 +155,6 @@ def test_un_noeud_ddl_imbrique_est_refuse_meme_si_la_racine_est_select() -> None
 @pytest.mark.parametrize(
     "sql",
     [
-        "SELECT * FROM sqlite_master",
         "SELECT * FROM information_schema.tables",
         "SELECT * FROM pg_catalog.pg_tables",
         "SELECT * FROM pg_user",
@@ -190,7 +189,6 @@ def test_les_fonctions_dangereuses_sont_refusees(sql: str) -> None:
         "SELECT table_to_xml('clients', true, false, '') FROM clients",
         "SELECT database_to_xml(true, false, '') FROM clients",
         "SELECT dblink_connect_u('connexion') FROM clients",
-        "SELECT randomblob(100000000) FROM clients",
         "SELECT fonction_inconnue(id) FROM clients",
     ],
 )

@@ -36,11 +36,9 @@ SAFE_FUNCTIONS = {
     "current_timestamp",
     "date",
     "date_trunc",
-    "datetime",
     "extract",
     "floor",
     "greatest",
-    "julianday",
     "least",
     "length",
     "lower",
@@ -51,7 +49,6 @@ SAFE_FUNCTIONS = {
     "replace",
     "round",
     "rtrim",
-    "strftime",
     "substring",
     "sum",
     "trim",
@@ -61,7 +58,7 @@ SAFE_FUNCTIONS = {
 # Les catalogues ne font pas partie du schéma métier, même si une configuration
 # les ajoutait par erreur à l'allowlist.
 SYSTEM_SCHEMAS = {"information_schema", "pg_catalog"}
-SYSTEM_TABLES = {"sqlite_master", "sqlite_schema", "pg_user", "pg_shadow"}
+SYSTEM_TABLES = {"pg_user", "pg_shadow"}
 
 
 def _strip_markdown_fence(text: str) -> str:
@@ -69,7 +66,7 @@ def _strip_markdown_fence(text: str) -> str:
 
     stripped = text.strip()
     match = re.fullmatch(
-        r"```(?:sql|postgresql|sqlite)?\s*\n?(.*?)\n?```",
+        r"```(?:sql|postgresql)?\s*\n?(.*?)\n?```",
         stripped,
         flags=re.IGNORECASE | re.DOTALL,
     )

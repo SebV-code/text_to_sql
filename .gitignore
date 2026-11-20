@@ -8,10 +8,7 @@ __pycache__/
 .env
 .streamlit/secrets.toml
 
-# Bases et artefacts locaux
-*.db
-*.sqlite
-*.sqlite3
+# Artefacts locaux
 .coverage
 htmlcov/
 

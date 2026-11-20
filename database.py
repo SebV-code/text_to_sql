@@ -1,16 +1,8 @@
-"""Accès minimal aux bases SQLite de démo et PostgreSQL/NeonDB.
-
-Le module ne construit aucun prompt LLM. Il fournit séparément les métadonnées
-de schéma et les résultats, afin qu'une fuite accidentelle soit plus difficile.
-"""
+"""Accès PostgreSQL/NeonDB limité au schéma et aux lectures métier."""
 
 from __future__ import annotations
 
-import sqlite3
-from collections.abc import Callable
 from dataclasses import dataclass
-from multiprocessing import get_all_start_methods, get_context
-from pathlib import Path
 from typing import Any, Protocol
 
 import psycopg
@@ -84,33 +76,6 @@ class QueryResult:
     rows: list[tuple[Any, ...]]
 
 
-class DatabaseQueryTimeoutError(RuntimeError):
-    """La base a interrompu une requête qui dépassait son échéance."""
-
-
-def _execute_sqlite_in_worker(
-    path: str, sql: str, max_rows: int, sender: Any
-) -> None:
-    """Exécute le SQL dans un processus isolé, sans propager les détails d'erreur."""
-
-    try:
-        connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-        try:
-            connection.execute("PRAGMA query_only = ON")
-            cursor = connection.execute(sql)
-            columns = tuple(item[0] for item in (cursor.description or ()))
-            rows = cursor.fetchmany(max_rows)
-            sender.send(("ok", columns, rows))
-        finally:
-            connection.close()
-    except Exception:
-        # Le parent ne doit afficher ni SQL brut, ni détail susceptible de
-        # contenir une valeur métier ou un chemin local.
-        sender.send(("error",))
-    finally:
-        sender.close()
-
-
 class Database(Protocol):
     dialect: str
 
@@ -119,104 +84,8 @@ class Database(Protocol):
     def execute(self, sql: str, *, max_rows: int) -> QueryResult: ...
 
 
-class SQLiteDatabase:
-    """Base locale ouverte en lecture seule pour les requêtes applicatives."""
-
-    dialect = "sqlite"
-
-    def __init__(
-        self, path: str | Path, *, statement_timeout_ms: int = 5000
-    ) -> None:
-        if statement_timeout_ms <= 0:
-            raise ValueError("statement_timeout_ms doit être positif")
-        self.path = Path(path)
-        self.statement_timeout_ms = statement_timeout_ms
-
-    def _connect_read_only(self) -> sqlite3.Connection:
-        # mode=ro empêche une écriture même si la validation SQL régressait.
-        return sqlite3.connect(f"file:{self.path.resolve()}?mode=ro", uri=True)
-
-    def get_schema(self) -> DatabaseSchema:
-        tables: list[TableSchema] = []
-        with self._connect_read_only() as connection:
-            table_names = [
-                row[0]
-                for row in connection.execute(
-                    "SELECT name FROM sqlite_schema "
-                    "WHERE type = 'table' AND name NOT LIKE 'sqlite_%' "
-                    "ORDER BY name"
-                )
-            ]
-            for table_name in table_names:
-                # Le nom vient du catalogue SQLite, pas d'une entrée utilisateur.
-                quoted_name = table_name.replace('"', '""')
-                column_rows = connection.execute(
-                    f'PRAGMA table_info("{quoted_name}")'
-                ).fetchall()
-                foreign_rows = connection.execute(
-                    f'PRAGMA foreign_key_list("{quoted_name}")'
-                ).fetchall()
-                columns = tuple(
-                    ColumnSchema(
-                        name=row[1],
-                        data_type=row[2] or "TEXT",
-                        nullable=not bool(row[3]) and not bool(row[5]),
-                        primary_key=bool(row[5]),
-                    )
-                    for row in column_rows
-                )
-                foreign_keys = tuple(
-                    ForeignKeySchema(
-                        column=row[3],
-                        reference_table=row[2],
-                        reference_column=row[4],
-                    )
-                    for row in foreign_rows
-                )
-                tables.append(TableSchema(table_name, columns, foreign_keys))
-        return DatabaseSchema(self.dialect, tuple(tables))
-
-    def execute(self, sql: str, *, max_rows: int) -> QueryResult:
-        if max_rows <= 0:
-            raise ValueError("max_rows doit être positif")
-
-        # Un progress handler SQLite ne peut pas interrompre une fonction native
-        # longue (randomblob, extension, etc.). Un processus séparé fournit une
-        # vraie échéance murale : il peut être terminé même si SQLite reste dans C.
-        method = "fork" if "fork" in get_all_start_methods() else "spawn"
-        context = get_context(method)
-        receiver, sender = context.Pipe(duplex=False)
-        process = context.Process(
-            target=_execute_sqlite_in_worker,
-            args=(str(self.path.resolve()), sql, max_rows, sender),
-            daemon=True,
-        )
-        process.start()
-        sender.close()
-        process.join(self.statement_timeout_ms / 1000)
-
-        if process.is_alive():
-            process.terminate()
-            process.join()
-            receiver.close()
-            raise DatabaseQueryTimeoutError(
-                "La requête SQLite a dépassé le délai d'exécution."
-            )
-
-        try:
-            if not receiver.poll(1):
-                raise RuntimeError("La base SQLite n'a retourné aucun résultat.")
-            payload = receiver.recv()
-        finally:
-            receiver.close()
-
-        if payload[0] != "ok":
-            raise RuntimeError("La base SQLite n'a pas pu exécuter la requête.")
-        return QueryResult(payload[1], payload[2])
-
-
 class _ConnectionFactory(Protocol):
-    def __call__(self, dsn: str) -> Any: ...
+    def __call__(self, dsn: str, /) -> Any: ...
 
 
 class PostgresDatabase:
@@ -239,8 +108,7 @@ class PostgresDatabase:
 
     def _prepare_read_only(self, cursor: Any) -> None:
         cursor.execute("SET TRANSACTION READ ONLY")
-        # Valeur convertie en int dans le constructeur : aucune interpolation
-        # provenant de l'utilisateur n'arrive dans cette commande.
+        # Cette valeur a été convertie en entier par la configuration appelante.
         cursor.execute(f"SET LOCAL statement_timeout = {self.statement_timeout_ms}")
 
     def execute(self, sql: str, *, max_rows: int) -> QueryResult:
@@ -258,20 +126,21 @@ class PostgresDatabase:
         return QueryResult(columns, rows)
 
     def get_schema(self) -> DatabaseSchema:
-        """Lit uniquement information_schema, jamais les tables métier."""
+        """Lit les métadonnées du schéma, y compris les clés visibles en lecture."""
 
         columns_sql = """
             SELECT c.table_name, c.column_name, c.data_type, c.is_nullable,
                    EXISTS (
                        SELECT 1
-                       FROM information_schema.table_constraints tc
-                       JOIN information_schema.key_column_usage kcu
-                         ON tc.constraint_name = kcu.constraint_name
-                        AND tc.table_schema = kcu.table_schema
-                       WHERE tc.constraint_type = 'PRIMARY KEY'
-                         AND tc.table_schema = c.table_schema
-                         AND tc.table_name = c.table_name
-                         AND kcu.column_name = c.column_name
+                       FROM pg_catalog.pg_constraint pk
+                       JOIN pg_catalog.pg_class rel ON rel.oid = pk.conrelid
+                       JOIN pg_catalog.pg_namespace ns ON ns.oid = rel.relnamespace
+                       JOIN pg_catalog.pg_attribute attr
+                         ON attr.attrelid = rel.oid AND attr.attnum = ANY(pk.conkey)
+                       WHERE pk.contype = 'p'
+                         AND ns.nspname = c.table_schema
+                         AND rel.relname = c.table_name
+                         AND attr.attname = c.column_name
                    ) AS is_primary_key
             FROM information_schema.columns c
             JOIN information_schema.tables t
@@ -281,18 +150,29 @@ class PostgresDatabase:
             ORDER BY c.table_name, c.ordinal_position
         """
         foreign_keys_sql = """
-            SELECT tc.table_name, kcu.column_name,
-                   ccu.table_name, ccu.column_name
-            FROM information_schema.table_constraints tc
-            JOIN information_schema.key_column_usage kcu
-              ON tc.constraint_name = kcu.constraint_name
-             AND tc.table_schema = kcu.table_schema
-            JOIN information_schema.constraint_column_usage ccu
-              ON ccu.constraint_name = tc.constraint_name
-             AND ccu.constraint_schema = tc.table_schema
-            WHERE tc.constraint_type = 'FOREIGN KEY'
-              AND tc.table_schema = 'public'
-            ORDER BY tc.table_name, kcu.ordinal_position
+            SELECT source.relname, source_column.attname,
+                   target.relname, target_column.attname
+            FROM pg_catalog.pg_constraint constraint_fk
+            JOIN pg_catalog.pg_class source
+              ON source.oid = constraint_fk.conrelid
+            JOIN pg_catalog.pg_namespace source_ns
+              ON source_ns.oid = source.relnamespace
+            JOIN pg_catalog.pg_class target
+              ON target.oid = constraint_fk.confrelid
+            JOIN pg_catalog.pg_namespace target_ns
+              ON target_ns.oid = target.relnamespace
+            JOIN LATERAL unnest(constraint_fk.conkey) WITH ORDINALITY
+              AS source_key(attnum, position) ON TRUE
+            JOIN pg_catalog.pg_attribute source_column
+              ON source_column.attrelid = source.oid
+             AND source_column.attnum = source_key.attnum
+            JOIN pg_catalog.pg_attribute target_column
+              ON target_column.attrelid = target.oid
+             AND target_column.attnum = constraint_fk.confkey[source_key.position]
+            WHERE constraint_fk.contype = 'f'
+              AND source_ns.nspname = 'public'
+              AND target_ns.nspname = 'public'
+            ORDER BY source.relname, source_key.position
         """
         with self._connector(self._dsn) as connection:
             with connection.cursor() as cursor:
@@ -315,6 +195,13 @@ class PostgresDatabase:
             )
         relations: dict[str, list[ForeignKeySchema]] = {}
         for table_name, column, reference_table, reference_column in foreign_rows:
+            if (
+                table_name not in by_table
+                or reference_table not in by_table
+                or column not in {item.name for item in by_table[table_name]}
+                or reference_column not in {item.name for item in by_table[reference_table]}
+            ):
+                continue
             relations.setdefault(table_name, []).append(
                 ForeignKeySchema(column, reference_table, reference_column)
             )
@@ -332,13 +219,12 @@ class PostgresDatabase:
 def create_database(
     *,
     database_url: str | None,
-    sqlite_path: str | Path,
     statement_timeout_ms: int = 5000,
-) -> Database:
-    """Choisit PostgreSQL si une URL non vide existe, sinon la démo SQLite."""
+) -> PostgresDatabase:
+    """Construit la connexion NeonDB et refuse toute configuration absente."""
 
-    if database_url and database_url.strip():
-        return PostgresDatabase(
-            database_url.strip(), statement_timeout_ms=statement_timeout_ms
-        )
-    return SQLiteDatabase(sqlite_path, statement_timeout_ms=statement_timeout_ms)
+    if not database_url or not database_url.strip():
+        raise ValueError("DATABASE_URL est requis.")
+    return PostgresDatabase(
+        database_url.strip(), statement_timeout_ms=statement_timeout_ms
+    )

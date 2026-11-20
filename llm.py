@@ -80,6 +80,7 @@ def generate_sql(
         "messages": build_messages(question, schema),
         "temperature": 0,
         "max_tokens": 700,
+        "reasoning": {"effort": "none"},
     }
     headers = {
         "Authorization": f"Bearer {api_key.strip()}",

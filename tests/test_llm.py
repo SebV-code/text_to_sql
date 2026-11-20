@@ -85,8 +85,10 @@ def test_generate_sql_envoie_seulement_messages_autorises_et_parametres_modele()
     assert sql == "SELECT COUNT(*) FROM clients"
     assert payload["model"] == "modele-test"
     assert payload["temperature"] == 0
+    assert payload["max_tokens"] == 700
+    assert payload["reasoning"] == {"effort": "none"}
     assert payload["messages"] == build_messages("Combien de clients ?", SCHEMA)
-    assert set(payload) == {"model", "messages", "temperature", "max_tokens"}
+    assert set(payload) == {"model", "messages", "temperature", "max_tokens", "reasoning"}
     assert "cle-test" not in serialized_payload
     assert "résultat confidentiel" not in serialized_payload
     assert opener.request.get_header("Authorization") == "Bearer cle-test"

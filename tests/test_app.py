@@ -8,10 +8,10 @@ from typing import Any
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from database import ColumnSchema, DatabaseSchema, QueryResult, TableSchema
+from database import ColumnSchema, DatabaseSchema, ForeignKeySchema, QueryResult, TableSchema
 from sql_security import SQLSecurityError
 
-from app import process_question
+from app import process_question, schema_diagram_dot
 
 
 class FakeDatabase:
@@ -40,6 +40,22 @@ class FakeDatabase:
         self.events.append("execute")
         self.executed.append((sql, max_rows))
         return QueryResult(("nom",), [("Alice locale",)])
+
+
+def test_diagramme_repere_tables_colonnes_et_relations() -> None:
+    schema = DatabaseSchema("postgres", (
+        TableSchema("clients", (ColumnSchema("id", "integer", False, True),)),
+        TableSchema("commandes", (
+            ColumnSchema("id", "integer", False, True),
+            ColumnSchema("client_id", "integer", False),
+        ), (ForeignKeySchema("client_id", "clients", "id"),)),
+    ))
+    dot = schema_diagram_dot(schema)
+    assert "clients" in dot and "commandes" in dot
+    assert "client_id" in dot and "id" in dot
+    assert '"commandes":c1 -> "clients":c0' in dot
+    assert "client_id → id" in dot
+    assert "PK" in dot and "FK" in dot
 
 
 def test_process_question_lit_schema_avant_appel_llm() -> None:
@@ -112,6 +128,7 @@ def test_interface_affiche_question_bouton_sql_et_zone_resultats(
     assert app.title[0].value == "Text-to-SQL"
     assert app.text_input[0].label == "Votre question en français"
     assert app.button[0].label == "Générer et exécuter"
+    assert app.button[1].label == "Voir le schéma des données"
     assert any("SQL" in markdown.value for markdown in app.markdown)
     assert any("Résultats" in markdown.value for markdown in app.markdown)
 
@@ -136,6 +153,21 @@ def test_interface_demo_reste_verrouillee_jusqua_authentification(
     app.text_input[0].set_value("test-only-password").run()
     assert app.text_input[0].label == "Votre question en français"
     assert app.button[0].label == "Générer et exécuter"
+
+
+def test_bouton_diagramme_affiche_schema_apres_authentification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DEMO_PASSWORD", "demo-test")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:***@example.test/database")
+    monkeypatch.setattr("app.PostgresDatabase", lambda *_args, **_kwargs: FakeDatabase())
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run(timeout=15)
+    assert not app.button
+    app.text_input[0].set_value("demo-test").run()
+    app.button[1].click().run()
+    assert not app.exception
+    assert any("Schéma des données interrogeables" in heading.value for heading in app.subheader)
+    assert any(button.label == "Revenir aux questions" for button in app.button)
 
 
 def test_interface_demo_refuse_de_demarrer_sans_mot_de_passe(

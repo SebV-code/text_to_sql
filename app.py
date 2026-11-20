@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import hmac
+import html
+import json
 import os
 from collections.abc import Callable
 
 import streamlit as st
 
-from database import Database, PostgresDatabase, QueryResult
+from database import Database, DatabaseSchema, PostgresDatabase, QueryResult
 from llm import DEFAULT_MODEL, LLMError, generate_sql
 from sql_security import SQLSecurityError, validate_and_limit_sql
 
@@ -74,6 +76,42 @@ def process_question(
     return safe_sql, database.execute(safe_sql, max_rows=max_rows)
 
 
+def schema_diagram_dot(schema: DatabaseSchema) -> str:
+    """Dessine uniquement les tables et contraintes déclarées, sans lignes."""
+    lines = [
+        "digraph schema {",
+        'graph [rankdir=LR, bgcolor="transparent", nodesep=0.7, ranksep=1.1];',
+        'node [shape=plain, fontname="Helvetica"];',
+        'edge [color="#64748b", arrowsize=0.8, fontname="Helvetica"];',
+    ]
+    names = {table.name for table in schema.tables}
+    for table in schema.tables:
+        # L'identifiant DOT et le texte HTML du label ont des échappements distincts.
+        node = json.dumps(table.name, ensure_ascii=False)
+        lines.append(f'{node} [label=<')
+        lines.append('<TABLE BORDER="1" CELLBORDER="0" CELLSPACING="0" CELLPADDING="7" COLOR="#94a3b8">')
+        lines.append(f'<TR><TD BGCOLOR="#1e293b" COLSPAN="2"><FONT COLOR="white"><B>{html.escape(table.name)}</B></FONT></TD></TR>')
+        foreign_columns = {fk.column for fk in table.foreign_keys}
+        for index, column in enumerate(table.columns):
+            badge = " ".join(tag for tag, present in (("PK", column.primary_key), ("FK", column.name in foreign_columns)) if present)
+            port = f"c{index}"
+            lines.append(f'<TR><TD PORT="{port}" ALIGN="LEFT">{html.escape(column.name)}</TD><TD ALIGN="LEFT"><FONT COLOR="#64748b">{html.escape(column.data_type)} {badge}</FONT></TD></TR>')
+        lines.append('</TABLE>>];')
+    for table in schema.tables:
+        for fk in table.foreign_keys:
+            if fk.reference_table not in names:
+                continue
+            source = table.name
+            target = fk.reference_table
+            # Les ports pointent sur les colonnes, pas seulement les tables.
+            source_column = next((i for i, col in enumerate(table.columns) if col.name == fk.column), None)
+            target_table = next(t for t in schema.tables if t.name == target)
+            target_column = next((i for i, col in enumerate(target_table.columns) if col.name == fk.reference_column), None)
+            if source_column is not None and target_column is not None:
+                lines.append(f'{json.dumps(source)}:c{source_column} -> {json.dumps(target)}:c{target_column} [label={json.dumps(fk.column + " → " + fk.reference_column, ensure_ascii=False)}];')
+    return "\n".join([*lines, "}"])
+
+
 def run_app() -> None:
     """Construit l'unique écran Streamlit de la V1."""
 
@@ -118,6 +156,19 @@ def run_app() -> None:
         placeholder="Ex. Quels sont les cinq produits les plus commandés ?",
     )
     submitted = st.button("Générer et exécuter", type="primary")
+    if st.button("Voir le schéma des données"):
+        st.session_state.show_schema = True
+    if st.session_state.get("show_schema", False):
+        st.subheader("Schéma des données interrogeables")
+        st.caption("PK : clé primaire · FK : clé étrangère · flèche : lien entre tables. Données fictives.")
+        if st.button("Revenir aux questions"):
+            st.session_state.show_schema = False
+            st.rerun()
+        try:
+            st.graphviz_chart(schema_diagram_dot(database.get_schema()), use_container_width=True)
+        except Exception:
+            st.error("Le schéma n'est pas disponible pour le moment.")
+        return
 
     st.markdown("### SQL généré")
     sql_placeholder = st.empty()

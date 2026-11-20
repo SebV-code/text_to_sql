@@ -30,7 +30,7 @@ class FakeCursor:
                 ("commandes", "id", "integer", "NO", True),
                 ("commandes", "client_id", "integer", "NO", False),
             ]
-        elif "FROM information_schema.table_constraints" in sql:
+        elif "FROM pg_catalog.pg_constraint" in sql:
             self._rows = [("commandes", "client_id", "clients", "id")]
         else:
             self._rows = [("Alice",)]
@@ -88,7 +88,7 @@ def test_postgres_execute_exige_une_limite_positive(max_rows: int) -> None:
         database.execute("SELECT 1", max_rows=max_rows)
 
 
-def test_get_schema_lit_uniquement_information_schema() -> None:
+def test_get_schema_lit_colonnes_et_relations_sans_lignes_metier() -> None:
     connection = FakeConnection()
     database = PostgresDatabase(
         "postgresql://secret@host/db", connector=lambda _: connection
@@ -99,13 +99,11 @@ def test_get_schema_lit_uniquement_information_schema() -> None:
 
     catalog_queries = [sql for sql, _ in connection.cursor_instance.calls[2:]]
     assert len(catalog_queries) == 2
-    assert all("information_schema" in sql for sql in catalog_queries)
+    assert "information_schema" in catalog_queries[0]
+    assert "FROM pg_catalog.pg_constraint" in catalog_queries[1]
     columns_query = catalog_queries[0]
-    normalized_columns_query = " ".join(columns_query.split())
-    assert "kcu.constraint_catalog = tc.constraint_catalog" in normalized_columns_query
-    assert "kcu.constraint_schema = tc.constraint_schema" in normalized_columns_query
-    assert "kcu.constraint_name = tc.constraint_name" in normalized_columns_query
-    assert "kcu.table_name = tc.table_name" in normalized_columns_query
+    assert "FROM pg_catalog.pg_constraint pk" in columns_query
+    assert "pk.contype = 'p'" in columns_query
     assert all(
         "FROM clients" not in sql and "FROM commandes" not in sql
         for sql in catalog_queries
@@ -115,6 +113,25 @@ def test_get_schema_lit_uniquement_information_schema() -> None:
     assert "clients(id integer PRIMARY KEY, nom text NOT NULL)" in prompt
     assert "commandes.client_id -> clients.id" in prompt
     assert connection.committed is True
+
+
+def test_get_schema_ne_divulgue_pas_les_relations_vers_tables_non_visibles() -> None:
+    class HiddenTargetCursor(FakeCursor):
+        def execute(self, sql: str, params: Any = None) -> None:
+            super().execute(sql, params)
+            if "FROM pg_catalog.pg_constraint constraint_fk" in sql:
+                self._rows.extend([
+                    ("commandes", "client_id", "private_customers", "secret_id"),
+                    ("commandes", "client_id", "clients", "hidden_column"),
+                ])
+
+    connection = FakeConnection()
+    connection.cursor_instance = HiddenTargetCursor()
+    schema = PostgresDatabase("postgresql://secret@host/db", connector=lambda _: connection).get_schema()
+    assert "private_customers" not in schema.to_prompt()
+    assert "secret_id" not in schema.to_prompt()
+    assert "hidden_column" not in schema.to_prompt()
+    assert "commandes.client_id -> clients.id" in schema.to_prompt()
 
 
 def test_create_database_construit_uniquement_postgres() -> None:

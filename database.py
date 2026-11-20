@@ -126,22 +126,21 @@ class PostgresDatabase:
         return QueryResult(columns, rows)
 
     def get_schema(self) -> DatabaseSchema:
-        """Lit les tables, colonnes, types et clés depuis information_schema."""
+        """Lit les métadonnées du schéma, y compris les clés visibles en lecture."""
 
         columns_sql = """
             SELECT c.table_name, c.column_name, c.data_type, c.is_nullable,
                    EXISTS (
                        SELECT 1
-                       FROM information_schema.table_constraints tc
-                       JOIN information_schema.key_column_usage kcu
-                         ON kcu.constraint_catalog = tc.constraint_catalog
-                        AND kcu.constraint_schema = tc.constraint_schema
-                        AND kcu.constraint_name = tc.constraint_name
-                        AND kcu.table_name = tc.table_name
-                       WHERE tc.constraint_type = 'PRIMARY KEY'
-                         AND tc.table_schema = c.table_schema
-                         AND tc.table_name = c.table_name
-                         AND kcu.column_name = c.column_name
+                       FROM pg_catalog.pg_constraint pk
+                       JOIN pg_catalog.pg_class rel ON rel.oid = pk.conrelid
+                       JOIN pg_catalog.pg_namespace ns ON ns.oid = rel.relnamespace
+                       JOIN pg_catalog.pg_attribute attr
+                         ON attr.attrelid = rel.oid AND attr.attnum = ANY(pk.conkey)
+                       WHERE pk.contype = 'p'
+                         AND ns.nspname = c.table_schema
+                         AND rel.relname = c.table_name
+                         AND attr.attname = c.column_name
                    ) AS is_primary_key
             FROM information_schema.columns c
             JOIN information_schema.tables t
@@ -151,25 +150,29 @@ class PostgresDatabase:
             ORDER BY c.table_name, c.ordinal_position
         """
         foreign_keys_sql = """
-            SELECT tc.table_name, kcu.column_name,
-                   ccu.table_name, ccu.column_name
-            FROM information_schema.table_constraints tc
-            JOIN information_schema.key_column_usage kcu
-              ON tc.constraint_catalog = kcu.constraint_catalog
-             AND tc.constraint_schema = kcu.constraint_schema
-             AND tc.constraint_name = kcu.constraint_name
-            JOIN information_schema.referential_constraints rc
-              ON tc.constraint_catalog = rc.constraint_catalog
-             AND tc.constraint_schema = rc.constraint_schema
-             AND tc.constraint_name = rc.constraint_name
-            JOIN information_schema.key_column_usage ccu
-              ON rc.unique_constraint_catalog = ccu.constraint_catalog
-             AND rc.unique_constraint_schema = ccu.constraint_schema
-             AND rc.unique_constraint_name = ccu.constraint_name
-             AND kcu.position_in_unique_constraint = ccu.ordinal_position
-            WHERE tc.constraint_type = 'FOREIGN KEY'
-              AND tc.table_schema = 'public'
-            ORDER BY tc.table_name, kcu.ordinal_position
+            SELECT source.relname, source_column.attname,
+                   target.relname, target_column.attname
+            FROM pg_catalog.pg_constraint constraint_fk
+            JOIN pg_catalog.pg_class source
+              ON source.oid = constraint_fk.conrelid
+            JOIN pg_catalog.pg_namespace source_ns
+              ON source_ns.oid = source.relnamespace
+            JOIN pg_catalog.pg_class target
+              ON target.oid = constraint_fk.confrelid
+            JOIN pg_catalog.pg_namespace target_ns
+              ON target_ns.oid = target.relnamespace
+            JOIN LATERAL unnest(constraint_fk.conkey) WITH ORDINALITY
+              AS source_key(attnum, position) ON TRUE
+            JOIN pg_catalog.pg_attribute source_column
+              ON source_column.attrelid = source.oid
+             AND source_column.attnum = source_key.attnum
+            JOIN pg_catalog.pg_attribute target_column
+              ON target_column.attrelid = target.oid
+             AND target_column.attnum = constraint_fk.confkey[source_key.position]
+            WHERE constraint_fk.contype = 'f'
+              AND source_ns.nspname = 'public'
+              AND target_ns.nspname = 'public'
+            ORDER BY source.relname, source_key.position
         """
         with self._connector(self._dsn) as connection:
             with connection.cursor() as cursor:
@@ -192,6 +195,13 @@ class PostgresDatabase:
             )
         relations: dict[str, list[ForeignKeySchema]] = {}
         for table_name, column, reference_table, reference_column in foreign_rows:
+            if (
+                table_name not in by_table
+                or reference_table not in by_table
+                or column not in {item.name for item in by_table[table_name]}
+                or reference_column not in {item.name for item in by_table[reference_table]}
+            ):
+                continue
             relations.setdefault(table_name, []).append(
                 ForeignKeySchema(column, reference_table, reference_column)
             )

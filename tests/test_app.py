@@ -114,3 +114,39 @@ def test_interface_affiche_question_bouton_sql_et_zone_resultats(
     assert app.button[0].label == "Générer et exécuter"
     assert any("SQL" in markdown.value for markdown in app.markdown)
     assert any("Résultats" in markdown.value for markdown in app.markdown)
+
+
+def test_interface_demo_reste_verrouillee_jusqua_authentification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DEMO_PASSWORD", "test-only-password")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:***@example.test/database")
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run(timeout=15)
+
+    assert not app.exception
+    assert app.text_input[0].label == "Mot de passe de démonstration"
+    assert app.text_input[0].proto.type == 1  # Streamlit TextInputType.PASSWORD
+    assert not app.button
+
+    app.text_input[0].set_value("incorrect").run()
+    assert not app.button
+    app.text_input[0].set_value("échec").run()
+    assert not app.exception
+    assert not app.button
+    app.text_input[0].set_value("test-only-password").run()
+    assert app.text_input[0].label == "Votre question en français"
+    assert app.button[0].label == "Générer et exécuter"
+
+
+def test_interface_demo_refuse_de_demarrer_sans_mot_de_passe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DEMO_REQUIRE_AUTH", "1")
+    monkeypatch.delenv("DEMO_PASSWORD", raising=False)
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:***@example.test/database")
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run(timeout=15)
+
+    assert not app.exception
+    assert app.error
+    assert not app.button
+    assert not app.text_input

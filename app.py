@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import os
 from collections.abc import Callable
 
@@ -82,6 +83,17 @@ def run_app() -> None:
         "Posez une question en français. Seuls la question et le schéma "
         "(tables, colonnes, types et relations) sont transmis à OpenRouter."
     )
+
+    demo_password = _setting("DEMO_PASSWORD")
+    if _setting("DEMO_REQUIRE_AUTH") == "1" and not demo_password:
+        st.error("La démonstration nécessite un mot de passe configuré.")
+        return
+    if demo_password and not st.session_state.get("demo_authenticated", False):
+        attempt = st.text_input("Mot de passe de démonstration", type="password")
+        if hmac.compare_digest(attempt.encode(), demo_password.encode()):
+            st.session_state.demo_authenticated = True
+            st.rerun()
+        return
 
     database_url = _setting("DATABASE_URL").strip()
     if not database_url:

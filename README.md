@@ -1,5 +1,6 @@
 # Text-to-SQL
 En production sur : [Text2SQL](https://portfolio.vatinel.fr/text2sql)
+mdp de démonstration : toto
 ## Problématique : Comment interroger une bdd PostGreSQL en langage naturel
 
 Une question en français est transformée en SQL par un appel API à un petit LLM.

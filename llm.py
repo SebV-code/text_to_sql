@@ -8,6 +8,7 @@ erreur de base ou une URL de connexion au modèle.
 from __future__ import annotations
 
 import json
+import re
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -47,6 +48,20 @@ def build_messages(question: str, schema: str) -> list[dict[str, str]]:
         "catalogues système et n'utilise aucune fonction d'administration, "
         "d'accès aux fichiers ou de temporisation."
     )
+    # Précision métier uniquement si ces colonnes figurent réellement au schéma.
+    if (
+        re.search(r"(?m)^- commandes\([^\n]*\bdate_commande\b[^\n]*\bmontant_total\b", schema)
+        and re.search(r"(?m)^- ventes\([^\n]*\bmontant_total\b", schema) is None
+    ):
+        system += (
+            " Pour le chiffre d'affaires, calcule SUM(commandes.montant_total), "
+            "jamais ventes.montant_total (colonne absente). Le premier semestre "
+            "correspond exactement aux mois 1 à 6 inclus : filtre avec "
+            "EXTRACT(MONTH FROM commandes.date_commande) BETWEEN 1 AND 6. "
+            "Sans année précisée, affiche le chiffre d'affaires par année avec "
+            "EXTRACT(YEAR FROM commandes.date_commande), en GROUP BY sur cette "
+            "expression ; n'invente pas d'année et n'utilise pas d'alias dans WHERE."
+        )
     user = f"Schéma autorisé :\n{schema}\n\nQuestion :\n{question}"
     return [
         {"role": "system", "content": system},

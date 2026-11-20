@@ -33,6 +33,20 @@ def test_messages_contiennent_uniquement_question_schema_et_contraintes() -> Non
     assert "DATABASE_URL" not in serialized
 
 
+def test_prompt_precise_le_calcul_du_ca_et_le_semestre_sans_annee() -> None:
+    schema = """Tables :
+- commandes(id integer, date_commande date, montant_total numeric)
+- ventes(id integer, commande_id integer, quantite integer)"""
+    messages = build_messages("Quel est le chiffre d'affaire du premier semestre ?", schema)
+    system = messages[0]["content"]
+    assert "commandes.montant_total" in system
+    assert "ventes.montant_total" in system
+    assert "date_commande" in system
+    assert "sans année" in system.lower()
+    assert "par année" in system
+    assert "BETWEEN 1 AND 6" in system
+
+
 def test_question_et_schema_vides_sont_refuses() -> None:
     with pytest.raises(ValueError):
         build_messages("", SCHEMA)
